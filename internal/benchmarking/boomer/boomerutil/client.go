@@ -39,6 +39,21 @@ const (
 	ateapiServerName = "api.ate-system.svc"
 )
 
+// RESTConfig returns the in-cluster Kubernetes config, or the local
+// kubeconfig when running outside a cluster.
+func RESTConfig() (*rest.Config, error) {
+	cfg, err := rest.InClusterConfig()
+	if err == nil {
+		return cfg, nil
+	}
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	cfg, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, &clientcmd.ConfigOverrides{}).ClientConfig()
+	if err != nil {
+		return nil, fmt.Errorf("k8s config: %w", err)
+	}
+	return cfg, nil
+}
+
 // DialControl opens an authenticated gRPC connection to ateapi.
 //
 // ateapi rejects calls that carry no credential, so present the pod
@@ -46,14 +61,9 @@ const (
 // and atenet-router. ClientCredBundle re-reads the bundle on every handshake,
 // so rotations are picked up without a restart.
 func DialControl(endpoint string) (*grpc.ClientConn, ateapipb.ControlClient, error) {
-	k8sConfig, err := rest.InClusterConfig()
+	k8sConfig, err := RESTConfig()
 	if err != nil {
-		loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-		configOverrides := &clientcmd.ConfigOverrides{}
-		k8sConfig, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides).ClientConfig()
-		if err != nil {
-			return nil, nil, fmt.Errorf("k8s config: %w", err)
-		}
+		return nil, nil, err
 	}
 	k8sClient, err := kubernetes.NewForConfig(k8sConfig)
 	if err != nil {

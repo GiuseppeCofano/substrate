@@ -32,8 +32,10 @@ import (
 	"go.ate.dev/substrate/internal/benchmarking/boomer/boomerutil"
 	"go.ate.dev/substrate/internal/benchmarking/boomer/dynconfig"
 	bmetrics "go.ate.dev/substrate/internal/benchmarking/boomer/metrics"
+	"go.ate.dev/substrate/internal/benchmarking/boomer/sandbox"
 	btrace "go.ate.dev/substrate/internal/benchmarking/boomer/trace"
 	"go.ate.dev/substrate/internal/benchmarking/boomer/userclass"
+	"go.ate.dev/substrate/pkg/proto/ateapipb"
 
 	// Register user classes via init():
 	"go.ate.dev/substrate/internal/benchmarking/boomer/agentsession"
@@ -59,6 +61,11 @@ func main() {
 		spawnConcurrency        = flag.Int("spawn-concurrency", 1, "Number of actors created concurrently (spawn benchmark).")
 		actorDeadline           = flag.Float64("actor-deadline", 120, "Per-actor timeout in seconds covering CreateActor + ResumeActor + Ping (spawn benchmark).")
 		httpMaxIdleConnsPerHost = flag.Int("http-max-idle-conns-per-host", 10000, "Idle HTTP connections the router client keeps per host. Set it to at least the number of users this worker runs, so each VU reuses its connection to the router across wakes instead of opening a new one per request.")
+		sandboxBackend          = flag.String("sandbox-backend", "substrate", "Where agentsession sessions run: substrate (actors), pod (one Pod per session) or warmpool (a sandbox claimed from --sandbox-warmpool).")
+		sandboxNamespace        = flag.String("sandbox-namespace", "benchmark-sandboxes", "Namespace of pod and warmpool sandboxes.")
+		sandboxPodTemplate      = flag.String("sandbox-pod-template", "/etc/sandbox/pod.yaml", "Pod YAML the pod backend creates each sandbox from.")
+		sandboxWarmPool         = flag.String("sandbox-warmpool", "glutton-pool", "SandboxWarmPool the warmpool backend claims from.")
+		sandboxPort             = flag.Int("sandbox-port", 8080, "Port glutton serves on in a pod or warmpool sandbox.")
 	)
 	// boomer.Run will call flag.Parse() if we haven't yet; calling here so
 	// our flag-derived values are usable before that.
@@ -136,12 +143,42 @@ func main() {
 		_ = tp.Shutdown(shutdownCtx)
 	}()
 
-	conn, apiStub, err := boomerutil.DialControl(*apiEndpoint)
-	if err != nil {
-		slog.Error("failed to dial ateapi", slog.String("err", err.Error()))
-		os.Exit(1)
+	var sb sandbox.Backend
+	if *sandboxBackend != "substrate" {
+		if class != "agentsession" {
+			slog.Error("fatal: --sandbox-backend needs --user-class agentsession",
+				slog.String("sandbox_backend", *sandboxBackend), slog.String("user_class", class))
+			os.Exit(1)
+		}
+		restCfg, err := boomerutil.RESTConfig()
+		if err != nil {
+			slog.Error("failed to load k8s config", slog.String("err", err.Error()))
+			os.Exit(1)
+		}
+		sb, err = newSandbox(sandboxOptions{
+			backend:     *sandboxBackend,
+			namespace:   *sandboxNamespace,
+			podTemplate: *sandboxPodTemplate,
+			warmPool:    *sandboxWarmPool,
+			port:        *sandboxPort,
+		}, restCfg)
+		if err != nil {
+			slog.Error("failed to build sandbox backend", slog.String("err", err.Error()))
+			os.Exit(1)
+		}
 	}
-	defer conn.Close()
+
+	// A sandbox run needs no Substrate install, so it does not dial ateapi.
+	var apiStub ateapipb.ControlClient
+	if sb == nil {
+		conn, stub, err := boomerutil.DialControl(*apiEndpoint)
+		if err != nil {
+			slog.Error("failed to dial ateapi", slog.String("err", err.Error()))
+			os.Exit(1)
+		}
+		defer conn.Close()
+		apiStub = stub
+	}
 
 	// Every VU talks to the one router address, so the transport must keep
 	// as many idle connections as there are VUs. The default keeps two per
@@ -203,6 +240,7 @@ func main() {
 		TotalActors:      *totalActors,
 		SpawnConcurrency: *spawnConcurrency,
 		ActorDeadline:    time.Duration(*actorDeadline * float64(time.Second)),
+		Sandbox:          sb,
 	}
 
 	taskFn, shutdownFn := entry.Init(cfg)
