@@ -744,11 +744,17 @@ func (u *sessionUser) ref() *ateapipb.ObjectRef {
 	return &ateapipb.ObjectRef{Atespace: u.cfg.Atespace, Name: u.actorName}
 }
 
+// resident reports whether the session stays awake between steps: always on
+// a sandbox backend, which has no actor to suspend, and in LifecycleModeNone.
+func (u *sessionUser) resident(dyn knobs) bool {
+	return u.cfg.Sandbox != nil || dyn.LifecycleMode == dynconfig.LifecycleModeNone
+}
+
 // shouldHibernateAtStart reports whether a freshly started session should be
 // parked before step 1. In resident mode (LifecycleModeNone) or when
 // snapshot steps are configured, the actor stays awake after waitServing.
 func (u *sessionUser) shouldHibernateAtStart(dyn knobs) bool {
-	if dyn.LifecycleMode == dynconfig.LifecycleModeNone {
+	if u.resident(dyn) {
 		return false
 	}
 	steps, err := parseSnapshotSteps(dyn.SnapshotSteps)
@@ -758,7 +764,7 @@ func (u *sessionUser) shouldHibernateAtStart(dyn knobs) bool {
 // shouldHibernateAfterStep reports whether the actor should be parked after
 // completing the current step (1-based index u.stepIndex+1).
 func (u *sessionUser) shouldHibernateAfterStep(dyn knobs) bool {
-	if dyn.LifecycleMode == dynconfig.LifecycleModeNone {
+	if u.resident(dyn) {
 		return false
 	}
 	steps, err := parseSnapshotSteps(dyn.SnapshotSteps)
@@ -786,7 +792,7 @@ func (u *sessionUser) runStep(ctx context.Context, step Step) bool {
 	}
 
 	dyn := dynconfig.Get[knobs](u.cfg.Dyn)
-	wasParked := !u.awake && dyn.LifecycleMode != dynconfig.LifecycleModeNone
+	wasParked := !u.awake && !u.resident(dyn)
 	// A parked actor's wake, from the first attempt to the ping that finds it
 	// serving, is one TimeToWake sample. A fleet with no room for the actor
 	// is retried within the budget, so the wait for a slot lands in that row
@@ -1140,13 +1146,14 @@ func (u *sessionUser) resume(ctx context.Context) error {
 }
 
 // hibernate suspends the actor at the end of a step, asynchronously by default
-// (async LifecycleMode) and synchronously in sync LifecycleMode. In
-// LifecycleModeNone the actor stays resident and hibernate is a no-op. A
+// (async LifecycleMode) and synchronously in sync LifecycleMode. A resident
+// session (sandbox backend or LifecycleModeNone) stays awake and hibernate is a no-op. A
 // failure leaves hibernatePending set so the next step re-drives it instead of
 // waking a stranded actor.
 func (u *sessionUser) hibernate(ctx context.Context) {
-	mode := dynconfig.Get[knobs](u.cfg.Dyn).LifecycleMode
-	if mode == dynconfig.LifecycleModeNone {
+	dyn := dynconfig.Get[knobs](u.cfg.Dyn)
+	mode := dyn.LifecycleMode
+	if u.resident(dyn) {
 		u.hibernatePending = false
 		return
 	}

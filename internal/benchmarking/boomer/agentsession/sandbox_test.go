@@ -152,3 +152,43 @@ func TestStartUserChecksSandboxMemory(t *testing.T) {
 		t.Errorf("refused start still provisioned %v", b.provisioned)
 	}
 }
+
+// An operator can change lifecycle_mode in the web UI while a sandbox run is
+// going. A sandbox session has no actor to suspend, so the steps must keep
+// running and advancing without control-plane calls.
+func TestSandboxSessionIgnoresLifecycleChangeMidRun(t *testing.T) {
+	b := &fakeBackend{memory: 1 << 30}
+	ts := (&fake.Server{}).Start(t)
+	b.url = ts.URL
+	dyn := dynconfig.NewHolder(knobsCodec)
+	if _, _, err := dyn.Apply([]byte(`{"lifecycle_mode":"none"}`)); err != nil {
+		t.Fatal(err)
+	}
+	rt := &runtime{cfg: &userclass.Config{
+		HTTPClient: ts.Client(),
+		RouterURL:  "http://router.invalid",
+		Atespace:   "benchmark",
+		Dyn:        dyn,
+		Tracer:     otel.Tracer("test"),
+		Sandbox:    b,
+	}}
+	loaded, err := rt.loadScript()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := rt.startUser(context.Background(), 0, loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := dyn.Apply([]byte(`{"lifecycle_mode":"async"}`)); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if !session.runStep(context.Background(), pingStep) {
+			t.Fatal("runStep = false after lifecycle_mode changed on a sandbox session")
+		}
+	}
+	if !session.awake || session.hibernatePending {
+		t.Errorf("awake = %v, hibernatePending = %v; want a resident session", session.awake, session.hibernatePending)
+	}
+}
