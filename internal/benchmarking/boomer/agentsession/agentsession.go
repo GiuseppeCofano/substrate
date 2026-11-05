@@ -28,6 +28,9 @@
 // fleet had no room for its actor (--agentsession-resume-retry-budget).
 // --agentsession-phase-in staggers session starts so a fleet spawned in one
 // ramp does not reach every later step in a single wave.
+//
+// With userclass.Config.Sandbox set, each session instead runs resident in a
+// sandbox that backend provisions, for the plain-Kubernetes baselines.
 package agentsession
 
 import (
@@ -344,31 +347,45 @@ func (r *runtime) checkTemplateMemory(ctx context.Context, script *Script) error
 	if r.templateErr != nil && r.templateErrFor == script && time.Since(r.templateErrAt) < templateRecheckInterval {
 		return r.templateErr
 	}
-	ref := &ateapipb.ObjectRef{Atespace: templateNS, Name: templateName}
-	tmpl, err := r.cfg.APIStub.GetActorTemplate(ctx, &ateapipb.GetActorTemplateRequest{ActorTemplate: ref})
+	limit, found, what, err := r.sandboxMemoryLimit(ctx)
 	if err != nil {
 		// Not a verdict: the next startUser asks again.
-		return fmt.Errorf("GetActorTemplate %s/%s: %w", templateNS, templateName, err)
+		return err
 	}
 	refuse := func(err error) error {
 		r.templateErr, r.templateErrAt, r.templateErrFor = err, time.Now(), script
 		return err
 	}
-	limit, found, err := memoryLimit(tmpl)
 	switch {
-	case err != nil:
-		return refuse(fmt.Errorf("template %s/%s: %w", templateNS, templateName, err))
 	case !found:
-		slog.Warn("agentsession: template sets no memory limit; cannot check it against the script",
-			slog.String("template", templateName),
+		slog.Warn("agentsession: sandbox sets no memory limit; cannot check it against the script",
+			slog.String("sandbox", what),
 			slog.String("min_actor_memory", FormatSize(script.MinActorMemory)))
 	case limit < script.MinActorMemory:
-		return refuse(fmt.Errorf("template %s/%s memory limit %s is below script %q min_actor_memory %s; redeploy the workloads with --actor-memory %s",
-			templateNS, templateName, FormatSize(limit), script.Name, FormatSize(script.MinActorMemory), FormatSize(script.MinActorMemory)))
+		return refuse(fmt.Errorf("%s memory limit %s is below script %q min_actor_memory %s; redeploy with a memory limit of %s",
+			what, FormatSize(limit), script.Name, FormatSize(script.MinActorMemory), FormatSize(script.MinActorMemory)))
 	}
 	r.templateOKFor = script
 	r.templateErr = nil
 	return nil
+}
+
+// sandboxMemoryLimit reads the memory limit sessions will run with: the
+// glutton ActorTemplate's, or the sandbox backend's. what names the source
+// for messages.
+func (r *runtime) sandboxMemoryLimit(ctx context.Context) (limit int64, found bool, what string, err error) {
+	if r.cfg.Sandbox != nil {
+		limit, found, err = r.cfg.Sandbox.MemoryLimit(ctx)
+		return limit, found, "sandbox template", err
+	}
+	what = "template " + templateNS + "/" + templateName
+	ref := &ateapipb.ObjectRef{Atespace: templateNS, Name: templateName}
+	tmpl, err := r.cfg.APIStub.GetActorTemplate(ctx, &ateapipb.GetActorTemplateRequest{ActorTemplate: ref})
+	if err != nil {
+		return 0, false, what, fmt.Errorf("GetActorTemplate %s/%s: %w", templateNS, templateName, err)
+	}
+	limit, found, err = memoryLimit(tmpl)
+	return limit, found, what, err
 }
 
 // memoryLimit reads the template's memory limit in bytes. found is false
@@ -496,6 +513,10 @@ func (r *runtime) startUser(ctx context.Context, gid int64, loaded *loadedScript
 		return nil, err
 	}
 	dyn := dynconfig.Get[knobs](r.cfg.Dyn)
+	if r.cfg.Sandbox != nil && dyn.LifecycleMode != dynconfig.LifecycleModeNone {
+		return nil, fmt.Errorf("sandbox backends keep sessions resident: set lifecycle_mode %q, got %q",
+			dynconfig.LifecycleModeNone, dyn.LifecycleMode)
+	}
 	if err := checkSnapshotSteps(dyn, loaded.Script); err != nil {
 		return nil, err
 	}
@@ -527,20 +548,29 @@ func (r *runtime) createSession(ctx context.Context, dyn knobs, loaded *loadedSc
 	}
 	slog.Info("Creating agent session", slog.String("actor", u.actorName))
 	bmetrics.UpdateUsers(agentSessionUserClass, 1)
-
-	if err := u.ensureAtespace(ctx); err != nil {
-		bmetrics.UpdateUsers(agentSessionUserClass, -1)
-		return nil, fmt.Errorf("ensureAtespace: %w", err)
-	}
-	if err := u.create(ctx); err != nil {
-		bmetrics.UpdateUsers(agentSessionUserClass, -1)
-		return nil, fmt.Errorf("createActor: %w", err)
+	start := time.Now()
+	if r.cfg.Sandbox != nil {
+		if err := u.provision(ctx); err != nil {
+			bmetrics.UpdateUsers(agentSessionUserClass, -1)
+			return nil, err
+		}
+	} else {
+		if err := u.ensureAtespace(ctx); err != nil {
+			bmetrics.UpdateUsers(agentSessionUserClass, -1)
+			return nil, fmt.Errorf("ensureAtespace: %w", err)
+		}
+		if err := u.create(ctx); err != nil {
+			bmetrics.UpdateUsers(agentSessionUserClass, -1)
+			return nil, fmt.Errorf("createActor: %w", err)
+		}
 	}
 	if err := u.waitServing(ctx); err != nil {
 		// suspendAndDelete decrements the user gauge; no extra decrement here.
 		u.suspendAndDelete(ctx)
+		bmetrics.RecordFailure("summary", "SessionStart", agentSessionUserClass, time.Since(start), err.Error())
 		return nil, fmt.Errorf("waitServing: %w", err)
 	}
+	bmetrics.RecordSuccess("summary", "SessionStart", agentSessionUserClass, time.Since(start), 0)
 	u.awake = true
 	// Park the fresh actor so step 01 wakes it like any other step, unless
 	// the session stays resident (--lifecycle-mode none or
@@ -632,6 +662,8 @@ type sessionUser struct {
 	steps []Step
 	// ingestBuf is the runtime's shared read-only ingest payload.
 	ingestBuf []byte
+	// baseURL is the sandbox glutton address when cfg.Sandbox is set.
+	baseURL string
 	// awake is true when the actor is resident (RUNNING) rather than
 	// suspended. Zero value (false) means parked.
 	awake bool
@@ -982,19 +1014,25 @@ func burnRatePerGoroutine(o op, iterations int64) (float64, bool) {
 	return float64(iterations) / float64(goroutines) / (float64(o.millis) / 1000), true
 }
 
-// postProto POSTs req to the actor's route through the router and
-// unmarshals the reply into resp. HTTP status >= 400 is an error carrying
-// the response body.
+// postProto POSTs req to the actor's route through the router, or straight
+// to the sandbox when cfg.Sandbox is set, and unmarshals the reply into
+// resp. HTTP status >= 400 is an error carrying the response body.
 func (u *sessionUser) postProto(ctx context.Context, route string, req, resp proto.Message) error {
 	body, err := proto.Marshal(req)
 	if err != nil {
 		return err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, u.cfg.RouterURL+route, bytes.NewReader(body))
+	url := u.cfg.RouterURL + route
+	if u.cfg.Sandbox != nil {
+		url = u.baseURL + route
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
-	httpReq.Header.Set(atenet.TargetActorHeader, u.cfg.Atespace+"/"+u.actorName)
+	if u.cfg.Sandbox == nil {
+		httpReq.Header.Set(atenet.TargetActorHeader, u.cfg.Atespace+"/"+u.actorName)
+	}
 	httpReq.Header.Set("Content-Type", "application/x-protobuf")
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(httpReq.Header))
 
@@ -1039,6 +1077,22 @@ func (u *sessionUser) create(ctx context.Context) error {
 		}, grpc.Trailer(tr))
 		return err
 	})
+}
+
+// provision creates the session's sandbox through cfg.Sandbox, bounded by
+// controlRPCTimeout. A sandbox not Ready by then counts as no capacity.
+func (u *sessionUser) provision(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, controlRPCTimeout)
+	defer cancel()
+	start := time.Now()
+	baseURL, err := u.cfg.Sandbox.Provision(ctx, u.actorName)
+	if err != nil {
+		bmetrics.RecordFailure("k8s", "CreateSandbox", agentSessionUserClass, time.Since(start), err.Error())
+		return fmt.Errorf("provision sandbox: %w", err)
+	}
+	bmetrics.RecordSuccess("k8s", "CreateSandbox", agentSessionUserClass, time.Since(start), 0)
+	u.baseURL = baseURL
+	return nil
 }
 
 // waitServing pings the actor through the router until glutton answers. The
@@ -1121,6 +1175,19 @@ func (u *sessionUser) hibernate(ctx context.Context) {
 // at delete risks being left CRASHED. Safe to call more than once.
 func (u *sessionUser) suspendAndDelete(ctx context.Context) {
 	if u.cleanedUp {
+		return
+	}
+	if u.cfg.Sandbox != nil {
+		releaseCtx, cancel := context.WithTimeout(ctx, controlRPCTimeout)
+		start := time.Now()
+		if err := u.cfg.Sandbox.Release(releaseCtx, u.actorName); err != nil {
+			bmetrics.RecordFailure("k8s", "DeleteSandbox", agentSessionUserClass, time.Since(start), err.Error())
+		} else {
+			bmetrics.RecordSuccess("k8s", "DeleteSandbox", agentSessionUserClass, time.Since(start), 0)
+		}
+		cancel()
+		bmetrics.UpdateUsers(agentSessionUserClass, -1)
+		u.cleanedUp = true
 		return
 	}
 	suspendCtx, cancel := context.WithTimeout(ctx, controlRPCTimeout)

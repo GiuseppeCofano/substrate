@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"go.ate.dev/substrate/internal/benchmarking/boomer/dynconfig"
+	"go.ate.dev/substrate/internal/benchmarking/boomer/sandbox"
 	"go.ate.dev/substrate/pkg/proto/ateapipb"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -42,6 +43,10 @@ type Config struct {
 	Dyn *dynconfig.Holder
 	// Tracer anchors sampled spans; falls back to the otel global if nil.
 	Tracer trace.Tracer
+	// Sandbox, when set, runs each agentsession session in a sandbox it
+	// provisions instead of a Substrate actor. Requests then go straight to
+	// the sandbox, not through the router. Nil runs Substrate actors.
+	Sandbox sandbox.Backend
 	// ActorsPerUser is the number of actors each VU creates on startup and
 	// cycles through in round-robin (iteration i targets actor
 	// i%ActorsPerUser). Zero or negative is treated as 1 by user classes
