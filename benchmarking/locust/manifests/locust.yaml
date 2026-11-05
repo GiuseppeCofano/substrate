@@ -134,6 +134,8 @@ spec:
         # benchmarking/locust/common/boomer_config.py on the master.
         - "--master-web-port=8089"
         - "--user-class=${BENCHMARK_USER_CLASS}"
+        # substrate (default), pod or warmpool; see benchmarking/baselines.
+        - "--sandbox-backend=${SANDBOX_BACKEND}"
         env:
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: opentelemetry-collector.gke-managed-otel.svc.cluster.local:4317
@@ -159,6 +161,11 @@ spec:
         - name: agentsession-script
           mountPath: /etc/agentsession
           readOnly: true
+        # The pod baseline's Pod template, from benchmarking/baselines/deploy.sh.
+        # Optional: other backends do not read it.
+        - name: sandbox-pod-template
+          mountPath: /etc/sandbox
+          readOnly: true
         resources:
           requests:
             cpu: "500m"
@@ -168,6 +175,10 @@ spec:
       - name: agentsession-script
         configMap:
           name: agentsession-script
+          optional: true
+      - name: sandbox-pod-template
+        configMap:
+          name: sandbox-pod-template
           optional: true
       - name: servicedns-ca
         projected:

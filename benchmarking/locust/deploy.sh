@@ -51,6 +51,7 @@ BENCHMARK_USER_CLASS=glutton
 # AGENTSESSION_SCRIPT_MOUNT; the master serves that path as the default of
 # --agentsession-script-file.
 AGENTSESSION_SCRIPT=""
+SANDBOX_BACKEND="${SANDBOX_BACKEND:-substrate}"
 AGENTSESSION_SCRIPT_MOUNT=/etc/agentsession/script.yaml
 
 usage() {
@@ -63,6 +64,9 @@ usage() {
   echo "  --agentsession-script FILE"
   echo "                     Run this script YAML in the agentsession user class instead of a"
   echo "                     built-in variant. Validated locally, then mounted into the workers."
+  echo "  --sandbox-backend NAME"
+  echo "                     substrate (default), pod or warmpool. Deploy the baseline first"
+  echo "                     with benchmarking/baselines/deploy.sh."
   echo "  -h|--help          Show this help message"
 }
 
@@ -82,7 +86,7 @@ deploy() {
     kubectl -n benchmarking create configmap agentsession-script \
       --from-file="script.yaml=${AGENTSESSION_SCRIPT}" --dry-run=client -o yaml | kubectl apply -f -
   fi
-  echo "Deploying Locust load (image=${LOCUST_IMAGE}, pull_policy=${LOCUST_IMAGE_PULL_POLICY}, user_class=${BENCHMARK_USER_CLASS}, agentsession_script=${AGENTSESSION_SCRIPT:-<built-in>})..."
+  echo "Deploying Locust load (image=${LOCUST_IMAGE}, pull_policy=${LOCUST_IMAGE_PULL_POLICY}, user_class=${BENCHMARK_USER_CLASS}, agentsession_script=${AGENTSESSION_SCRIPT:-<built-in>}, sandbox_backend=${SANDBOX_BACKEND})..."
   envsubst < "${MANIFEST}" | kubectl apply -f -
 }
 
@@ -106,6 +110,8 @@ while [[ "$#" -gt 0 ]]; do
     --user-class=*) BENCHMARK_USER_CLASS="$(printf '%s' "${1#*=}" | tr '[:upper:]' '[:lower:]')" ;;
     --agentsession-script) shift; AGENTSESSION_SCRIPT="$1" ;;
     --agentsession-script=*) AGENTSESSION_SCRIPT="${1#*=}" ;;
+    --sandbox-backend) shift; SANDBOX_BACKEND="$1" ;;
+    --sandbox-backend=*) SANDBOX_BACKEND="${1#*=}" ;;
     -h|--help) usage; exit 0 ;;
     *)
       echo "Error: Unknown option: $1" >&2
@@ -129,7 +135,7 @@ if [[ -n "${AGENTSESSION_SCRIPT}" ]]; then
   # root, and a relative path would resolve against that instead.
   AGENTSESSION_SCRIPT="$(cd "$(dirname "${AGENTSESSION_SCRIPT}")" && pwd)/$(basename "${AGENTSESSION_SCRIPT}")"
 fi
-export BENCHMARK_USER_CLASS
+export BENCHMARK_USER_CLASS SANDBOX_BACKEND
 # Empty leaves the master's --agentsession-script-file default unset, so
 # workers run the built-in variant named by --agentsession-script.
 AGENTSESSION_SCRIPT_FILE=""

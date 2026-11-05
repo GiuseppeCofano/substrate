@@ -1,0 +1,53 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+# Pod spec shared by both baselines: the B1 Pod and the B2 SandboxTemplate.
+# It runs the same glutton build and resources as the Substrate ActorTemplate
+# in benchmarking/workloads/manifests/glutton-template.yaml.tmpl. deploy.sh
+# indents it into place.
+runtimeClassName: ${SANDBOX_RUNTIME_CLASS}
+restartPolicy: Never
+containers:
+- name: glutton
+  image: ko://go.ate.dev/substrate/cmd/benchmarking/glutton
+  command:
+  - "/ko-app/glutton"
+  - "--grpc-listen-addr=:8080"
+  - "--metrics-listen-addr=:9090"
+  - "--data-dir=/tmp/glutton"
+  - "--mode=http"
+  ports:
+  - containerPort: 8080
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: 8080
+    periodSeconds: 1
+  resources:
+    requests:
+      cpu: "${ACTOR_CPU_MILLICORES}m"
+      memory: "${ACTOR_MEMORY_BYTES}"
+    limits:
+      cpu: "${ACTOR_CPU_MILLICORES}m"
+      memory: "${ACTOR_MEMORY_BYTES}"
+  volumeMounts:
+  - name: data
+    mountPath: /tmp/glutton
+volumes:
+# Memory-backed, so glutton's disk writes count against the memory limit as
+# they do on the actor's in-memory rootfs.
+- name: data
+  emptyDir:
+    medium: Memory
