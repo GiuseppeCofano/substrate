@@ -61,6 +61,10 @@ func (p *Pod) Provision(ctx context.Context, name string) (string, error) {
 	pod := p.template.DeepCopy()
 	pod.Name = name
 	pod.Namespace = p.namespace
+	if pod.Labels == nil {
+		pod.Labels = map[string]string{}
+	}
+	pod.Labels[SessionLabel] = "true"
 	if _, err := p.client.CoreV1().Pods(p.namespace).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
 		return "", fmt.Errorf("create pod %s: %w", name, err)
 	}

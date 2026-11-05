@@ -58,8 +58,12 @@ func (w *WarmPool) Provision(ctx context.Context, name string) (string, error) {
 	claim := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "extensions.agents.x-k8s.io/v1beta1",
 		"kind":       "SandboxClaim",
-		"metadata":   map[string]any{"name": name, "namespace": w.namespace},
-		"spec":       map[string]any{"warmPoolRef": map[string]any{"name": w.pool}},
+		"metadata": map[string]any{
+			"name":      name,
+			"namespace": w.namespace,
+			"labels":    map[string]any{SessionLabel: "true"},
+		},
+		"spec": map[string]any{"warmPoolRef": map[string]any{"name": w.pool}},
 	}}
 	claims := w.client.Resource(claimGVR).Namespace(w.namespace)
 	if _, err := claims.Create(ctx, claim, metav1.CreateOptions{}); err != nil {

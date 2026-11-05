@@ -16,13 +16,16 @@
 
 # Installs or removes an agentsession baseline: pod (one Pod per session) or
 # warmpool (an Agent Sandbox warm pool). Run benchmarking/locust/deploy.sh
-# with the same --sandbox-backend afterwards.
+# with the same --sandbox-backend afterwards. --sweep deletes the sandboxes
+# a run left behind; run it between runs.
 
 set -o errexit -o nounset -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 MANIFESTS="${SCRIPT_DIR}/manifests"
+# Matches sandbox.SessionLabel in internal/benchmarking/boomer/sandbox.
+SESSION_LABEL="agentsession.ate.dev/session"
 AGENT_SANDBOX_VERSION="v1.0.9"
 AGENT_SANDBOX_URL="https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}/sandbox-with-extensions.yaml"
 
@@ -33,6 +36,7 @@ export WARMPOOL_REPLICAS="${WARMPOOL_REPLICAS:-50}"
 
 usage() {
   echo "Usage: $0 --deploy|--delete --backend pod|warmpool"
+  echo "       $0 --sweep"
   echo ""
   echo "Env: KO_DOCKER_REPO (required for --deploy), ACTOR_CPU_MILLICORES, ACTOR_MEMORY_BYTES,"
   echo "     SANDBOX_RUNTIME_CLASS (default gvisor; empty omits runtimeClassName), WARMPOOL_REPLICAS"
@@ -90,7 +94,21 @@ spec:
   replicas: ${WARMPOOL_REPLICAS}
   sandboxTemplateRef:
     name: glutton
+  # Replace ready sandboxes when the template changes, so no claim gets a
+  # sandbox built from an older one.
+  updateStrategy:
+    type: Recreate
 YAML
+}
+
+# sweep deletes the Pods and SandboxClaims earlier runs left behind, for
+# example after a worker was killed before its shutdown sweep.
+sweep() {
+  kubectl get namespace benchmark-sandboxes >/dev/null 2>&1 || return 0
+  kubectl -n benchmark-sandboxes delete pods -l "${SESSION_LABEL}" --ignore-not-found --wait=true
+  if kubectl get crd sandboxclaims.extensions.agents.x-k8s.io >/dev/null 2>&1; then
+    kubectl -n benchmark-sandboxes delete sandboxclaims -l "${SESSION_LABEL}" --ignore-not-found --wait=true
+  fi
 }
 
 deploy() {
@@ -101,6 +119,7 @@ deploy() {
   for tool in envsubst kubectl; do
     command -v "${tool}" >/dev/null || { echo "${tool} not found in PATH" >&2; exit 1; }
   done
+  sweep
   kubectl apply -f "${MANIFESTS}/namespace-rbac.yaml"
   kubectl create namespace benchmarking --dry-run=client -o yaml | kubectl apply -f -
   case "$1" in
@@ -108,6 +127,10 @@ deploy() {
       render_pod | ko_resolve > "${TMPDIR:-/tmp}/sandbox-pod.yaml"
       kubectl -n benchmarking create configmap sandbox-pod-template \
         --from-file=pod.yaml="${TMPDIR:-/tmp}/sandbox-pod.yaml" --dry-run=client -o yaml | kubectl apply -f -
+      # Workers read the template once at start; restart them to pick it up.
+      if kubectl -n benchmarking get deployment locust >/dev/null 2>&1; then
+        kubectl -n benchmarking rollout restart deployment/locust
+      fi
       ;;
     warmpool)
       kubectl apply --server-side -f "${AGENT_SANDBOX_URL}"
@@ -123,6 +146,7 @@ deploy() {
 }
 
 delete() {
+  sweep
   kubectl -n benchmarking delete configmap sandbox-pod-template --ignore-not-found
   if [[ "$1" == "warmpool" ]] && kubectl get crd sandboxclaims.extensions.agents.x-k8s.io >/dev/null 2>&1; then
     kubectl -n benchmark-sandboxes delete sandboxclaims --all --ignore-not-found
@@ -138,12 +162,17 @@ while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --deploy) action="deploy" ;;
     --delete) action="delete" ;;
+    --sweep) action="sweep" ;;
     --backend) shift; backend="${1:-}" ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 1 ;;
   esac
   shift
 done
+if [[ "${action}" == "sweep" ]]; then
+  sweep
+  exit 0
+fi
 if [[ -z "${action}" || -z "${backend}" ]]; then
   usage
   exit 1

@@ -83,8 +83,8 @@ func TestPodProvision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Labels["app"] != "agentsession-sandbox" {
-		t.Errorf("pod labels = %v, want the template's", got.Labels)
+	if got.Labels["app"] != "agentsession-sandbox" || got.Labels[SessionLabel] != "true" {
+		t.Errorf("pod labels = %v, want the template's plus %s", got.Labels, SessionLabel)
 	}
 }
 

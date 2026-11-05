@@ -22,6 +22,10 @@ import (
 	"time"
 )
 
+// SessionLabel marks every Pod and SandboxClaim a backend creates, so
+// benchmarking/baselines/deploy.sh can delete the ones a run left behind.
+const SessionLabel = "agentsession.ate.dev/session"
+
 // releaseTimeout bounds the cleanup of a sandbox whose provision failed.
 const releaseTimeout = 30 * time.Second
 

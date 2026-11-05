@@ -77,6 +77,9 @@ func TestWarmPoolProvision(t *testing.T) {
 	if pool, _, _ := unstructured.NestedString(claim.Object, "spec", "warmPoolRef", "name"); pool != "glutton-pool" {
 		t.Errorf("claim warmPoolRef = %q, want glutton-pool", pool)
 	}
+	if claim.GetLabels()[SessionLabel] != "true" {
+		t.Errorf("claim labels = %v, want %s", claim.GetLabels(), SessionLabel)
+	}
 }
 
 func TestWarmPoolProvisionTimesOutAndCleansUp(t *testing.T) {
