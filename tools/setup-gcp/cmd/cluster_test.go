@@ -580,3 +580,13 @@ func TestDeleteNodePoolCommand(t *testing.T) {
 		t.Errorf("got  %q\nwant %q", got, want)
 	}
 }
+
+// Organizations that enforce constraints/compute.requireShieldedVm reject
+// nodes without Secure Boot, and gVisor workers run fine with it on.
+func TestBuildCreateClusterRequest_SecureBoot(t *testing.T) {
+	req := buildCreateClusterRequest("projects/p/locations/l", &Config{ProjectID: "p", MachineType: "c3-standard-4"})
+	shielded := req.GetCluster().GetNodePools()[0].GetConfig().GetShieldedInstanceConfig()
+	if !shielded.GetEnableSecureBoot() || !shielded.GetEnableIntegrityMonitoring() {
+		t.Errorf("ShieldedInstanceConfig = %v, want Secure Boot and integrity monitoring on", shielded)
+	}
+}

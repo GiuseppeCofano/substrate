@@ -74,6 +74,12 @@ func buildCreateClusterRequest(parent string, cfg *Config) *containerpb.CreateCl
 		LinuxNodeConfig: &containerpb.LinuxNodeConfig{
 			Sysctls: maps.Clone(requiredNodeSysctls),
 		},
+		// Some organizations enforce constraints/compute.requireShieldedVm,
+		// which rejects nodes without Secure Boot.
+		ShieldedInstanceConfig: &containerpb.ShieldedInstanceConfig{
+			EnableSecureBoot:          true,
+			EnableIntegrityMonitoring: true,
+		},
 	}
 	if cfg.EnableNestedVirtualization {
 		nodeConfig.AdvancedMachineFeatures = &containerpb.AdvancedMachineFeatures{
