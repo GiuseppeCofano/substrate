@@ -268,7 +268,7 @@ tune_fake_atelet() {
   before="$(kubectl get configmap fake-atelet-tuning --namespace=ate-system -o jsonpath='{.data}' --ignore-not-found)"
   local literals=()
   local entry
-  for entry in "${FAKE_ATELET_ENV[@]}"; do
+  for entry in ${FAKE_ATELET_ENV[@]+"${FAKE_ATELET_ENV[@]}"}; do
     literals+=("--from-literal=${entry}")
   done
   kubectl create configmap fake-atelet-tuning --namespace=ate-system "${literals[@]}" \
@@ -487,7 +487,7 @@ if [[ "${action}" == "deploy" && -z "${ATE_ENV_IMAGE:-}" && " ${TEMPLATES[*]} " 
   exit 1
 fi
 
-for entry in "${FAKE_ATELET_ENV[@]}"; do
+for entry in ${FAKE_ATELET_ENV[@]+"${FAKE_ATELET_ENV[@]}"}; do
   if ! [[ "${entry}" =~ ^FAKE_ATELET_[A-Z_]+=.+$ ]]; then
     echo "Error: --fake-atelet-env must be FAKE_ATELET_<FLAG>=VALUE, such as FAKE_ATELET_DELAY=500ms, got '${entry}'" >&2
     exit 1
