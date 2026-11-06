@@ -590,3 +590,18 @@ func TestBuildCreateClusterRequest_SecureBoot(t *testing.T) {
 		t.Errorf("ShieldedInstanceConfig = %v, want Secure Boot and integrity monitoring on", shielded)
 	}
 }
+
+// Organizations that enforce constraints/compute.vmExternalIpAccess reject
+// nodes with external IPs; private nodes reach the internet through Cloud NAT.
+func TestBuildCreateClusterRequest_PrivateNodes(t *testing.T) {
+	for _, private := range []bool{false, true} {
+		req := buildCreateClusterRequest("projects/p/locations/l", &Config{ProjectID: "p", EnablePrivateNodes: private})
+		c := req.GetCluster()
+		if got := c.GetPrivateClusterConfig().GetEnablePrivateNodes(); got != private {
+			t.Errorf("private=%v: EnablePrivateNodes = %v", private, got)
+		}
+		if private && !c.GetIpAllocationPolicy().GetUseIpAliases() {
+			t.Error("private nodes need a VPC-native cluster: UseIpAliases = false")
+		}
+	}
+}

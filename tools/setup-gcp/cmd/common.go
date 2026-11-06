@@ -36,6 +36,9 @@ type Config struct {
 	Network           string
 	Subnetwork        string
 	EnableDataplaneV2 bool
+	// EnablePrivateNodes gives nodes no external IP; they need Cloud NAT
+	// for egress.
+	EnablePrivateNodes bool
 
 	NodePoolName               string
 	NodePoolVersion            string
