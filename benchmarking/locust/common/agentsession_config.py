@@ -70,6 +70,19 @@ def add_agentsession_arguments(parser: LocustArgumentParser) -> None:
         include_in_web_ui=True,
     )
     parser.add_argument(
+        "--agentsession-random-start",
+        type=float,
+        default=0.0,
+        env_var="LOCUST_AGENTSESSION_RANDOM_START",
+        help=(
+            "Above 0, each new session starts at a uniformly random step and "
+            "first waits a uniform share of that step's think time, so a fleet "
+            "running a real-time script is spread across it from the start "
+            "(default: 0, every session starts at the first step)"
+        ),
+        include_in_web_ui=True,
+    )
+    parser.add_argument(
         "--agentsession-resume-retry-budget",
         type=float,
         default=60.0,

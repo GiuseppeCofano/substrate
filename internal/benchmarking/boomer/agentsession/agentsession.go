@@ -146,6 +146,10 @@ type knobs struct {
 	// of it before creating its actor, so a fleet does not move through the
 	// script in lockstep waves; 0 starts every session at once.
 	PhaseIn dynconfig.Seconds `json:"agentsession_phase_in"`
+	// RandomStart > 0 starts each new session at a uniformly random step,
+	// waiting a uniform share of that step's think time first, so a fleet
+	// running a real-time script is spread across it from the start.
+	RandomStart float64 `json:"agentsession_random_start"`
 	// ResumeRetryBudget bounds how long a step keeps retrying a wake the
 	// fleet had no room for before it gives up on the step; 0 gives the
 	// wake one attempt. Unset, it is defaultResumeRetryBudget.
@@ -167,6 +171,9 @@ var knobsCodec = dynconfig.Typed[knobs]{
 		}
 		if k.PhaseIn < 0 {
 			return fmt.Errorf("agentsession_phase_in cannot be negative: %v", k.PhaseIn)
+		}
+		if k.RandomStart < 0 {
+			return fmt.Errorf("agentsession_random_start cannot be negative: %v", k.RandomStart)
 		}
 		if k.ResumeRetryBudget < 0 {
 			return fmt.Errorf("agentsession_resume_retry_budget cannot be negative: %v", k.ResumeRetryBudget)
@@ -463,6 +470,16 @@ func (r *runtime) phaseIn(gid int64) {
 	}
 }
 
+// randomStart picks a session's first step and the share of that step's
+// think time it waits before its first wake. An empty script starts at 0
+// with a full wait.
+func randomStart(n int, intN func(int) int, frac func() float64) (int, float64) {
+	if n <= 0 {
+		return 0, 1
+	}
+	return intN(n), frac()
+}
+
 // phaseInDelay draws one VU's wait: uniform in [0, --agentsession-phase-in),
 // or none when the window is unset.
 func (r *runtime) phaseInDelay() time.Duration {
@@ -524,7 +541,12 @@ func (r *runtime) iterate() {
 		step := u.steps[u.stepIndex]
 
 		// The LLM is "thinking": the actor stays suspended for the gap.
-		time.Sleep(r.think(step))
+		wait := r.think(step)
+		if u.firstWait > 0 {
+			wait = time.Duration(float64(wait) * u.firstWait)
+			u.firstWait = 0
+		}
+		time.Sleep(wait)
 
 		if u.runStep(context.Background(), step) {
 			u.advance()
@@ -699,6 +721,9 @@ func (r *runtime) createSession(ctx context.Context, dyn knobs, loaded *loadedSc
 		}
 		u.advance()
 	}
+	if dyn.RandomStart > 0 {
+		u.stepIndex, u.firstWait = randomStart(len(u.steps), mathrand.IntN, mathrand.Float64)
+	}
 	// Park the fresh actor so the next step wakes it like any other step,
 	// unless the session stays resident (--lifecycle-mode none or
 	// --agentsession-snapshot-steps). A failed park is re-driven at the top
@@ -783,6 +808,9 @@ type sessionUser struct {
 	cfg       *userclass.Config
 	actorName string
 	stepIndex int
+	// firstWait scales the first think gap of a randomly started session;
+	// 0 means no scaling.
+	firstWait float64
 	cleanedUp bool
 	// steps is the script this session started on; a knob change mid-run
 	// does not move a session to another script.
