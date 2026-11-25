@@ -480,6 +480,13 @@ func randomStart(n int, intN func(int) int, frac func() float64) (int, float64) 
 	return intN(n), frac()
 }
 
+// replayFirstStep reports whether a randomly started session must run step 0
+// before its first step: later steps may read state (files, RAM) that step 0
+// creates, as a peak slice's restore_state step does.
+func replayFirstStep(idx int, ranFirst bool) bool {
+	return idx > 0 && !ranFirst
+}
+
 // phaseInDelay draws one VU's wait: uniform in [0, --agentsession-phase-in),
 // or none when the window is unset.
 func (r *runtime) phaseInDelay() time.Duration {
@@ -710,6 +717,7 @@ func (r *runtime) createSession(ctx context.Context, dyn knobs, loaded *loadedSc
 		return nil, fmt.Errorf("waitServing: %w", err)
 	}
 	u.awake = true
+	ranFirst := false
 	if dyn.Awake > 0 || dyn.LifecycleMode == dynconfig.LifecycleModeNone {
 		// Run step 1 so the initial actor/snapshot holds real memory and disk
 		// state. A resident session would otherwise stay empty until step 1's
@@ -720,9 +728,15 @@ func (r *runtime) createSession(ctx context.Context, dyn knobs, loaded *loadedSc
 			return nil, fmt.Errorf("initial step %s failed", u.steps[0].Name)
 		}
 		u.advance()
+		ranFirst = true
 	}
 	if dyn.RandomStart > 0 {
-		u.stepIndex, u.firstWait = randomStart(len(u.steps), mathrand.IntN, mathrand.Float64)
+		idx, wait := randomStart(len(u.steps), mathrand.IntN, mathrand.Float64)
+		if replayFirstStep(idx, ranFirst) && !u.runStep(ctx, u.steps[0]) {
+			u.suspendAndDelete(ctx)
+			return nil, fmt.Errorf("state step %s failed", u.steps[0].Name)
+		}
+		u.stepIndex, u.firstWait = idx, wait
 	}
 	// Park the fresh actor so the next step wakes it like any other step,
 	// unless the session stays resident (--lifecycle-mode none or

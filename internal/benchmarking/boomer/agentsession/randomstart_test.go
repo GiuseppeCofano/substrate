@@ -29,3 +29,17 @@ func TestRandomStartEmptyScript(t *testing.T) {
 		t.Fatalf("randomStart(0) = (%d, %v), want (0, 1)", idx, frac)
 	}
 }
+
+func TestRandomStartReplaysStepZeroForState(t *testing.T) {
+	// A session that joins mid-script first runs step 0, which recreates the
+	// state the earlier steps of the day built (restore_state in a peak slice).
+	if !replayFirstStep(5, false) {
+		t.Fatal("a session starting at step 5 must replay step 0")
+	}
+	if replayFirstStep(0, false) {
+		t.Fatal("a session starting at step 0 runs it anyway")
+	}
+	if replayFirstStep(5, true) {
+		t.Fatal("step 0 already ran at creation")
+	}
+}
