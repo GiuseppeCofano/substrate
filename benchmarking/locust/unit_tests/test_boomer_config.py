@@ -60,6 +60,14 @@ class TestBoomerConfig(unittest.TestCase):
         self.assertEqual(parsed["agentsession_phase_in"], 300.0)
         self.assertEqual(parsed["agentsession_resume_retry_budget"], 0.0)
 
+    def test_build_config_json_random_start(self):
+        raw = boomer_config.build_config_json([
+            "--agentsession-random-start",
+            "1",
+        ])
+        parsed = json.loads(raw)
+        self.assertEqual(parsed["agentsession_random_start"], 1.0)
+
     def test_build_config_json_turnover(self):
         raw = boomer_config.build_config_json([
             "--agentsession-awake",

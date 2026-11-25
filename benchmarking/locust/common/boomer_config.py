@@ -80,6 +80,7 @@ _FLAGS = {
     "--agentsession-think-scale": float,
     "--agentsession-snapshot-steps": str,
     "--agentsession-phase-in": float,
+    "--agentsession-random-start": float,
     "--agentsession-resume-retry-budget": float,
     "--agentsession-awake": int,
     "--total-actors": int,
